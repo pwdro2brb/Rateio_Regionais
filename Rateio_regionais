@@ -23,8 +23,6 @@ from selenium.webdriver.common.keys import Keys
 # --- Pywinauto Imports ---
 from pywinauto.application import Application
 from pywinauto import Desktop
-import pyperclip
-import pyautogui
 
 #funções de ajuda para Selenium e Windows (reutilizáveis e específicas para os desafios deste site)
 
@@ -34,7 +32,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 
-def verificar_textos_na_tabela(driver, wait, textos, timeout=40):
+def verificar_textos_na_tabela(driver, wait, textos, timeout=3):
     """
     Verifica quais textos de uma lista estão presentes no texto renderizado da tabela.
 
@@ -59,7 +57,7 @@ def verificar_textos_na_tabela(driver, wait, textos, timeout=40):
 
     return encontrados, faltando, conteudo
 
-def click_ok_confirm(driver, wait, timeout=40, max_tentativas=5):
+def click_ok_confirm(driver, wait, timeout=3, max_tentativas=3):
     """
     Clica no botão 'OK' (id='btnTipoDoc', class='confirm') dentro de
     diálogos Angular Material (mat-dialog-container).
@@ -1102,7 +1100,7 @@ def determinar_id_por_valor(valor_str: str, cnpj_pagador: str, df: pd.DataFrame)
         }
 
     # Múltiplas linhas → aplica regra de valor
-    if valor_float < 410.00:
+    if valor_float < 400.00:
         id_alvo = 2
     elif valor_float < 2000.00:
         id_alvo = 7
@@ -1168,12 +1166,12 @@ def click_continuar_proximo_ao_select(driver, wait):
         except Exception:
             driver.execute_script("arguments[0].click();", link)
 
-def preencher_codigo_material_ultima_linha(driver, wait, material_cod, timeout=40):
+def preencher_codigo_material_ultima_linha(driver, wait, material_cod, timeout=3):
     # Seleciona APENAS inputs de Código do Material (nunca pega CNAE/NCM)
     xpath_all = ("//input[(@formcontrolname='frmCodigoMaterial' or @name='codigoMaterial' "
                  " or @placeholder='CÓDIGO DO MATERIAL') and not(@disabled)]")
 
-    # Espera pelo menos 1 visível
+    # Espera pelo menos 1 visível 
     end = time.time() + timeout
     visiveis = []
     while time.time() < end:
@@ -1403,12 +1401,221 @@ def safe_click_diferenciado(driver, element):
         driver.execute_script("arguments[0].click();", element)
  
 def fazer_upload_janela_windows(caminho_do_arquivo):
-    time.sleep(3)
-    pyperclip.copy(str(caminho_do_arquivo))
-    pyautogui.hotkey('ctrl', 'v')
-    time.sleep(1)
-    pyautogui.press('enter')
-    time.sleep(2)
+    """
+    Interage com a janela nativa 'Abrir' do Windows usando pywinauto.
+    Tenta múltiplos backends e títulos para máxima compatibilidade.
+    """
+    from pywinauto import Desktop
+    from pywinauto.timings import wait_until
+    import time
+
+    caminho_absoluto = str(Path(caminho_do_arquivo).resolve())
+
+    # Títulos possíveis da janela (pt-BR, en-US, variações do Chrome)
+    titulos_possiveis = [
+        "Abrir",
+        "Open",
+        "Abrir arquivo",
+        "Escolher arquivo para carregar",
+        "Escolher arquivo",
+        "Select file",
+        "File Upload",
+        "Carregar",
+    ]
+
+    # Classes de janela conhecidas para diálogos de arquivo do Windows
+    classes_possiveis = ["#32770"]  # Classe padrão de diálogos do Windows
+
+    janela = None
+    backend_usado = None
+
+    # ── Tentativa 1: Busca por TÍTULO em ambos os backends ──
+    for backend in ["uia", "win32"]:
+        if janela:
+            break
+        try:
+            desktop = Desktop(backend=backend)
+            for titulo in titulos_possiveis:
+                try:
+                    win = desktop.window(title=titulo)
+                    if win.exists(timeout=1):
+                        janela = win
+                        backend_usado = backend
+                        print(f"✅ Janela encontrada! Título='{titulo}', Backend='{backend}'")
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # ── Tentativa 2: Busca por TÍTULO PARCIAL (title_re) ──
+    if not janela:
+        import re
+        for backend in ["uia", "win32"]:
+            if janela:
+                break
+            try:
+                desktop = Desktop(backend=backend)
+                # Busca qualquer janela que contenha "Abrir" ou "Open" no título
+                for win in desktop.windows():
+                    try:
+                        titulo = win.window_text()
+                        if any(t.lower() in titulo.lower() for t in ["abrir", "open", "upload", "file"]):
+                            janela = win
+                            backend_usado = backend
+                            print(f"✅ Janela encontrada (parcial)! Título='{titulo}', Backend='{backend}'")
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    # ── Tentativa 3: Busca pela CLASSE da janela (#32770 = diálogo padrão Windows) ──
+    if not janela:
+        for backend in ["uia", "win32"]:
+            if janela:
+                break
+            try:
+                desktop = Desktop(backend=backend)
+                for classe in classes_possiveis:
+                    try:
+                        win = desktop.window(class_name=classe)
+                        if win.exists(timeout=1):
+                            janela = win
+                            backend_usado = backend
+                            titulo_real = win.window_text()
+                            print(f"✅ Janela encontrada (por classe)! Título='{titulo_real}', Classe='{classe}', Backend='{backend}'")
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    # ── Se nenhuma tentativa funcionou ──
+    if not janela:
+        # DEBUG: Lista todas as janelas para diagnóstico
+        print("\n⚠️ JANELA NÃO ENCONTRADA! Listando todas as janelas abertas:")
+        for backend in ["uia", "win32"]:
+            try:
+                desktop = Desktop(backend=backend)
+                print(f"\n  --- Backend {backend} ---")
+                for win in desktop.windows():
+                    try:
+                        t = win.window_text()
+                        c = win.class_name()
+                        if t:
+                            print(f"    Título: '{t}' | Classe: '{c}'")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        raise RuntimeError(
+            "⚠️ Janela de upload não encontrada! "
+            "Verifique se a janela 'Abrir' está realmente visível na tela."
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    # INTERAÇÃO COM A JANELA ENCONTRADA
+    # ══════════════════════════════════════════════════════════════
+
+    try:
+        janela.wait("ready", timeout=10)
+    except Exception:
+        time.sleep(1)  # Fallback: espera simples
+
+    # ── Preencher o campo "Nome do arquivo" ──
+    campo_preenchido = False
+
+    if backend_usado == "uia":
+        # UIA: tenta localizar o Edit pelo automation_id ou pelo título
+        tentativas_campo = [
+            lambda: janela.child_window(title="Nome do arquivo:", control_type="ComboBox").child_window(control_type="Edit"),
+            lambda: janela.child_window(title="Nome do arquivo:", control_type="Edit"),
+            lambda: janela.child_window(title="File name:", control_type="ComboBox").child_window(control_type="Edit"),
+            lambda: janela.child_window(title="File name:", control_type="Edit"),
+            lambda: janela.child_window(control_type="Edit", found_index=0),
+        ]
+    else:
+        # win32: tenta pelo class_name do Edit
+        tentativas_campo = [
+            lambda: janela.child_window(class_name="Edit", found_index=0),
+            lambda: janela.child_window(title="Nome do arquivo:", class_name="ComboBoxEx32").child_window(class_name="Edit"),
+            lambda: janela.child_window(class_name="ComboBoxEx32").child_window(class_name="Edit"),
+        ]
+
+    for get_campo in tentativas_campo:
+        try:
+            campo = get_campo()
+            if campo.exists(timeout=2):
+                campo.set_edit_text(caminho_absoluto)
+                campo_preenchido = True
+                print(f"✅ Caminho digitado no campo: {caminho_absoluto}")
+                break
+        except Exception:
+            continue
+
+    if not campo_preenchido:
+        # Fallback FINAL: usa keyboard do pywinauto para digitar
+        try:
+            from pywinauto.keyboard import send_keys
+            janela.set_focus()
+            time.sleep(0.3)
+            # Limpa o campo atual e digita o caminho
+            send_keys("^a{DELETE}", pause=0.05)
+            time.sleep(0.1)
+            # Escapa caracteres especiais do pywinauto ({, }, +, ^, %)
+            caminho_escaped = caminho_absoluto.replace("{", "{{").replace("}", "}}")
+            send_keys(caminho_escaped, pause=0.02, with_spaces=True)
+            campo_preenchido = True
+            print(f"✅ Caminho digitado via send_keys: {caminho_absoluto}")
+        except Exception as e:
+            raise RuntimeError(f"⚠️ Não consegui digitar o caminho do arquivo: {e}")
+
+    time.sleep(0.5)
+
+    # ── Clicar no botão "Abrir" ──
+    botao_clicado = False
+
+    nomes_botao = ["Abrir", "Open", "&Abrir", "&Open"]
+
+    for nome_btn in nomes_botao:
+        if botao_clicado:
+            break
+        try:
+            if backend_usado == "uia":
+                btn = janela.child_window(title=nome_btn, control_type="Button")
+            else:
+                btn = janela.child_window(title=nome_btn, class_name="Button")
+
+            if btn.exists(timeout=2):
+                btn.click()
+                botao_clicado = True
+                print(f"✅ Botão '{nome_btn}' clicado!")
+        except Exception:
+            continue
+
+    if not botao_clicado:
+        # Fallback: pressiona Enter
+        try:
+            from pywinauto.keyboard import send_keys
+            send_keys("{ENTER}")
+            botao_clicado = True
+            print("✅ Enter pressionado como fallback para confirmar.")
+        except Exception as e:
+            raise RuntimeError(f"⚠️ Não consegui clicar no botão Abrir: {e}")
+
+    # ── Aguarda a janela fechar ──
+    for _ in range(20):
+        try:
+            if not janela.exists(timeout=0):
+                print(f"✅ Upload concluído: {caminho_absoluto}")
+                return
+        except Exception:
+            print(f"✅ Upload concluído: {caminho_absoluto}")
+            return
+        time.sleep(0.5)
+
+    print("⚠️ Janela pode não ter fechado, mas o caminho foi preenchido.")
 
 def click_ok_confirm_repeatedly(driver, wait, max_clicks=5):    
     clicks = 0
@@ -1603,7 +1810,10 @@ try:
     driver = webdriver.Chrome(options=chrome_options) 
     driver.get("https://mrvpag2.mrv.com.br/home")
     driver.maximize_window()
+
     wait = WebDriverWait(driver, 15)
+    wait_rapido = WebDriverWait(driver, 2)
+
 except Exception as e:
     print(f"Erro ao iniciar o Chrome: {e}"); exit()
 
@@ -1611,12 +1821,12 @@ try:
     
     # --- LOGIN MICROSOFT ---
     print("Aguardando login...")
-    wait.until(EC.presence_of_element_located((By.ID, "i0116"))).send_keys(" ")
+    wait.until(EC.presence_of_element_located((By.ID, "i0116"))).send_keys(" ") # Digite seu e-mail
     
     # Substituímos o click normal pelo nosso anti-stale
     click_anti_stale(wait, By.ID, "idSIButton9")
     
-    wait.until(EC.presence_of_element_located((By.ID, "i0118"))).send_keys(" ") 
+    wait.until(EC.presence_of_element_located((By.ID, "i0118"))).send_keys(" ") # Digite sua senha
 
     # Substituímos o click normal pelo nosso anti-stale
     click_anti_stale(wait, By.ID, "idSIButton9")
@@ -1876,10 +2086,10 @@ try:
         except StaleElementReferenceException:
             continue
 
-    #----------- Clique no 2° CONTINUAR -------- 
+    #----------- Clique no 2° CONTINUAR --------
 
     # Caso simples: clica no OK (pode aparecer 1 ou mais vezes)
-    qtd_cliques = click_ok_confirm(driver, wait, timeout=3, max_tentativas=3)
+    qtd_cliques = click_ok_confirm(driver, wait_rapido, timeout=3, max_tentativas=3)
 
     if qtd_cliques == 0:
         print("⚠️ Nenhum diálogo de confirmação apareceu.")
@@ -1888,23 +2098,21 @@ try:
     print("OK (se existia) clicado. Seguindo fluxo...")
 
     campo_desc = driver.find_element(By.CSS_SELECTOR, 'input[formcontrolname="frmDescNota"]')
-
     campo_desc.clear()
     campo_desc.send_keys(descr)
 
-    btn1 = click_primeiro_continuar(driver, wait)
+    btn1 = click_primeiro_continuar(driver, wait_rapido)
 
     # 2) Esperar a transição/step/navegação
-    esperar_transicao_apos_primeiro(wait, btn1)
+    esperar_transicao_apos_primeiro(wait_rapido, btn1)
 
     # 3) Clicar no segundo CONTINUAR (a)
-    click_segundo_continuar(driver, wait)
-
+    click_segundo_continuar(driver, wait_rapido)
 
     #--------------------- fim do continuar ---------------------
 
     # 4) Clica no botão "Adicionar"
-    btn_adicionar = wait.until(
+    btn_adicionar = wait_rapido.until(
         EC.element_to_be_clickable((
             By.XPATH,
             "//span[normalize-space(.)='Adicionar']/ancestor::button[1]"
@@ -1913,32 +2121,35 @@ try:
     btn_adicionar.click()
 
     # 5) Preenche "CÓDIGO DO MATERIAL"
-    preencher_codigo_material_ultima_linha(driver, wait, material_cod)
+    preencher_codigo_material_ultima_linha(driver, wait_rapido, material_cod, timeout=10)
 
     # 1) Pesquisar
-    click_pesquisar(driver, wait)
+    click_pesquisar(driver, wait_rapido)
 
+    # ⏳ ÚNICO PONTO QUE REALMENTE DEMORA — mantém timeout=40
     selecionar_primeira_linha_checkbox(
-    driver, wait,
-    textos_para_verificar=["S2601", "5001382", "CNAE/NCM"],
-    exigir_todos=False,
-    clicar_mesmo_se_faltar=True
+        driver, wait,  # ← usa o wait NORMAL (15s) + timeout interno de 40s
+        timeout=40,
+        textos_para_verificar=["S2601", "5001382", "CNAE/NCM"],
+        exigir_todos=False,
+        clicar_mesmo_se_faltar=True
     )
+
     # 3) Incluir produto(s)
-    click_incluir_produtos(driver, wait)
+    click_incluir_produtos(driver, wait_rapido)
 
     # 4) Preencher quantidade e valor
-    VALOR_BOLETO = valor_boleto   # <<< ajuste aqui conforme o valor do documento
-    preencher_quantidade_e_valor(driver, wait, quantidade="1", valor_boleto=VALOR_BOLETO)
-    
+    VALOR_BOLETO = valor_boleto
+    preencher_quantidade_e_valor(driver, wait_rapido, quantidade="1", valor_boleto=VALOR_BOLETO)
+
     # 1) Abrir o select "Justificativa"
-    abrir_select_justificativa(driver, wait)
+    abrir_select_justificativa(driver, wait_rapido)
 
     # 2) Selecionar a opção COM HOVER
-    selecionar_opcao_justificativa_com_hover(driver, wait, texto_alvo="2 - Orientações do gestor/coordendor da área")
+    selecionar_opcao_justificativa_com_hover(driver, wait_rapido, texto_alvo="2 - Orientações do gestor/coordendor da área")
 
     # 3) CONTINUAR (link <a>)
-    click_continuar_proximo_ao_select(driver, wait)
+    click_continuar_proximo_ao_select(driver, wait_rapido)
     
     # 4) ANEXAR PLANILHA
     # Se quiser apenas clicar no botão:
