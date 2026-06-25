@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from pathlib import Path
-from typing import Union
+from typing import Union, Tuple
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import numbers
@@ -204,11 +204,12 @@ def _extrair_coletor_de_titular(texto: str) -> str:
             
     return "SEM CENTRO DE CUSTO"
 
-def ler_correios_bruto(caminho_correios: Union[str, Path]) -> pd.DataFrame:
+def ler_correios_bruto(caminho_correios: Union[str, Path]) -> Tuple[pd.DataFrame, float]:
     df_raw = pd.read_excel(caminho_correios, header=None, engine='openpyxl')
     idx_header = -1
     col_titular, col_valor = -1, -1
     
+    # 1. Encontrar o cabeçalho da tabela principal
     for i, row in df_raw.head(20).iterrows():
         row_norm = [_norm_colname(str(x)) for x in row.values]
         if any('titular do cartao' in c for c in row_norm) and any('valor do servico' in c for c in row_norm):
@@ -218,15 +219,41 @@ def ler_correios_bruto(caminho_correios: Union[str, Path]) -> pd.DataFrame:
                 if 'valor do servico' in c: col_valor = j
             break
             
-    if idx_header == -1: return pd.DataFrame(columns=['TIPOCOLETOR', 'COLETOR', 'VALOR'])
+    # 2. Encontrar o "Valor Líquido" no final do arquivo
+    valor_liquido = 0.0
+    idx_fim_tabela = len(df_raw)
     
-    df = df_raw.iloc[idx_header + 1:, [col_titular, col_valor]].copy()
+    # Busca de baixo para cima para encontrar a seção de totais
+    for i in range(len(df_raw) - 1, -1, -1):
+        row_norm = [_norm_colname(str(x)) for x in df_raw.iloc[i].values]
+        
+        # Verifica se encontrou a linha de cabeçalho dos totais
+        if any('valor liquido' in c for c in row_norm):
+            idx_fim_tabela = i  # A tabela de dados principal termina antes dessa linha
+            for j, c in enumerate(row_norm):
+                if 'valor liquido' in c:
+                    # O valor real está na linha de baixo (i + 1), na mesma coluna (j)
+                    if i + 1 < len(df_raw):
+                        val_raw = df_raw.iloc[i + 1, j]
+                        # Reutilizamos a sua função de limpeza passando uma Series de 1 elemento
+                        valor_liquido = _clean_valor_series(pd.Series([val_raw])).iloc[0]
+                    break
+            break
+
+    if idx_header == -1: 
+        return pd.DataFrame(columns=['TIPOCOLETOR', 'COLETOR', 'VALOR']), valor_liquido
+    
+    # 3. Processar a tabela principal (limitando até idx_fim_tabela para ignorar os resumos)
+    df = df_raw.iloc[idx_header + 1 : idx_fim_tabela, [col_titular, col_valor]].copy()
     df.columns = ['TITULAR', 'VALOR']
     df['VALOR'] = _clean_valor_series(df['VALOR'])
     df = df.dropna(subset=['VALOR'])
     df['COLETOR'] = df['TITULAR'].apply(_extrair_coletor_de_titular)
     df['TIPOCOLETOR'] = df['COLETOR'].apply(_tipo_de_coletor)
-    return df[['TIPOCOLETOR', 'COLETOR', 'VALOR']]
+    
+    df_final = df[['TIPOCOLETOR', 'COLETOR', 'VALOR']]
+    
+    return df_final, valor_liquido
 
 # ==========================================
 #     CONSTRUÇÃO E CONCILIAÇÃO FINAL
@@ -249,13 +276,6 @@ def _formatar_planilha_final(arquivo_xlsx: Union[str, Path], sheet='Planilha1'):
         if isinstance(cell_valor.value, (int, float)):
             cell_valor.number_format = numbers.FORMAT_NUMBER_00
             
-        cell_op = row[idx_op - 1]
-        '''
-        if cell_op.value == '0010' or cell_op.value == 10:
-            cell_op.number_format = '@' 
-            cell_op.value = '0010'
-        '''
-            
     wb.save(arquivo_xlsx)
     wb.close()
 
@@ -269,54 +289,93 @@ def gerar_rateio_pag(
 ) -> pd.DataFrame:
 
     df_rr_raw = ler_rr_bruto(caminho_rr)
-    df_corr_raw = ler_correios_bruto(caminho_correios)
+    df_corr_raw, valor_liquido_correios = ler_correios_bruto(caminho_correios)
 
     total_rr = float(df_rr_raw['VALOR'].sum()) if not df_rr_raw.empty else 0.0
-    total_corr = float(df_corr_raw['VALOR'].sum()) if not df_corr_raw.empty else 0.0
+    total_corr_soma = float(df_corr_raw['VALOR'].sum()) if not df_corr_raw.empty else 0.0
+    
+    # O total oficial dos correios é o Valor Líquido do rodapé (se encontrado)
+    total_corr = valor_liquido_correios if valor_liquido_correios > 0 else total_corr_soma
 
     if debug:
-        print(f"[DEBUG] TOTAL RR       = R$ {total_rr:.2f}")
-        print(f"[DEBUG] TOTAL CORREIOS = R$ {total_corr:.2f}")
-        print(f"[DEBUG] DIFERENÇA      = R$ {round(total_corr - total_rr, 2):.2f}")
+        print(f"[DEBUG] TOTAL RR               = R$ {total_rr:.2f}")
+        print(f"[DEBUG] TOTAL CORREIOS (SOMA)  = R$ {total_corr_soma:.2f}")
+        print(f"[DEBUG] TOTAL CORREIOS (LÍQ)   = R$ {valor_liquido_correios:.2f}")
+        print(f"[DEBUG] DIFERENÇA (LÍQ - RR)   = R$ {round(total_corr - total_rr, 2):.2f}")
 
     if abs(total_corr - total_rr) <= tolerancia_igual:
         if debug: print("[DEBUG] Valores batem perfeitamente. Usando apenas Recebidos.")
         final_base = df_rr_raw.copy()
     else:
         if debug: print("[DEBUG] Valores divergem. Iniciando Conciliação Avançada...")
-        coletores_no_rr = set(df_rr_raw['COLETOR'].dropna())
-        valores_disponiveis = df_rr_raw['VALOR'].round(2).tolist()
-        faltantes = []
         
-        # Função para dar baixa no valor (com tolerância de 2 centavos do Excel)
-        def dar_baixa_valor(val):
-            for i, v in enumerate(valores_disponiveis):
+        # 1. Agrupar os dados ANTES de comparar para evitar duplicação por quebra de linhas
+        df_rr_grp = df_rr_raw.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
+        df_corr_grp = df_corr_raw.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
+
+        coletores_rr = set(df_rr_grp['COLETOR'])
+        valores_rr_disponiveis = df_rr_grp['VALOR'].round(2).tolist()
+        
+        faltantes = []
+
+        def dar_baixa_valor_total(val):
+            for i, v in enumerate(valores_rr_disponiveis):
                 if abs(v - val) <= 0.02:
-                    valores_disponiveis.pop(i)
+                    valores_rr_disponiveis.pop(i)
                     return True
             return False
 
-        for _, row in df_corr_raw.iterrows():
+        for _, row in df_corr_grp.iterrows():
             c = row['COLETOR']
             v = round(row['VALOR'], 2)
-            matched = False
             
-            if pd.notna(c) and c in coletores_no_rr:
-                matched = True
-                dar_baixa_valor(v) 
-            elif dar_baixa_valor(v):
-                matched = True
+            if c in coletores_rr:
+                # Coletor existe no RR. Pegamos o valor que o RR aprovou.
+                val_no_rr = round(df_rr_grp[df_rr_grp['COLETOR'] == c]['VALOR'].sum(), 2)
                 
-            if not matched: faltantes.append(row)
+                # Removemos esse valor da lista para não dar falso positivo em renomeações
+                dar_baixa_valor_total(val_no_rr) 
                 
+                # Se os Correios cobraram MAIS do que o RR aprovou, a diferença ficou de fora
+                if v > val_no_rr + 0.02:
+                    faltantes.append({
+                        'TIPOCOLETOR': row['TIPOCOLETOR'],
+                        'COLETOR': c,
+                        'VALOR': v - val_no_rr
+                    })
+            else:
+                # Coletor NÃO existe no RR.
+                if dar_baixa_valor_total(v):
+                    # O valor bate exatamente com outro coletor do RR. 
+                    # Assumimos que foi apenas renomeado/corrigido pela regional. Não adiciona.
+                    pass
+                else:
+                    # Realmente faltante (regional excluiu ou esqueceu).
+                    faltantes.append(row.to_dict())
+
         if faltantes:
             df_faltantes = pd.DataFrame(faltantes)
-            final_base = pd.concat([df_rr_raw, df_faltantes], ignore_index=True)
-            if debug: print(f"[DEBUG] Encontrados {len(faltantes)} pacotes que não pertencem à regional.")
+            final_base = pd.concat([df_rr_grp, df_faltantes], ignore_index=True)
+            if debug: print(f"[DEBUG] Encontrados {len(faltantes)} centros de custo com divergência.")
         else:
-            final_base = df_rr_raw.copy()
+            final_base = df_rr_grp.copy()
+            
+        # TRAVA DE SEGURANÇA: Impede que a conciliação gere um valor maior que a fatura
+        soma_final = final_base['VALOR'].sum()
+        if soma_final > total_corr + 0.50:
+            if debug: print("[DEBUG] ALERTA: A conciliação detalhada excedeu o total da fatura. Aplicando Ajuste Global.")
+            diferenca_global = total_corr - total_rr
+            if diferenca_global > 0.02:
+                linha_ajuste = pd.DataFrame([{
+                    'TIPOCOLETOR': '-',
+                    'COLETOR': 'AJUSTE DE CONCILIACAO',
+                    'VALOR': diferenca_global
+                }])
+                final_base = pd.concat([df_rr_grp, linha_ajuste], ignore_index=True)
+            else:
+                final_base = df_rr_grp.copy()
 
-    # Agrupa tudo para limpar linhas duplicadas de mesmo centro de custo
+    # Agrupa tudo novamente para garantir que a tabela final seja limpa
     final_base = final_base.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
 
     # Monta Tabela Final

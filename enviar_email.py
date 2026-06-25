@@ -30,7 +30,7 @@ def criar_rascunhos_correios():
         "Ribeirão Preto": "kaylana.alves@mrv.com.br",
         "Centro Oeste": "nicole.souza@mrv.com.br; maksuel.araujo@mrv.com.br; eunice.prudente@primeconstrucoes.com.br; maryanne.camargo@primeconstrucoes.com.br",
         "Nordeste": "langela.santos@mrv.com.br",
-        "Sul": "victoria.gomes@mrv.com.br; simone.csantos@mrv.com.br; monique.silva@mrv.com.br",
+        "Sul": "victoria.gomes@mrv.com.br; filipe.avila@mrv.com.br; simone.csantos@mrv.com.br; monique.silva@mrv.com.br",
         "São Paulo": "telma.amattos@mrv.com.br; cristina.demetrio@parceiro.mrv.com.br; manoella.camargo@mrv.com.br; luciano.lsilva@mrv.com.br; nicoli.santos@mrv.com.br",
         "Triângulo": "kamilly.silva@mrv.com.br; kaylana.alves@mrv.com.br; maria.fernnanda@mrv.com.br"
     }
