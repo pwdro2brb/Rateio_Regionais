@@ -378,6 +378,37 @@ def gerar_rateio_pag(
     # Agrupa tudo novamente para garantir que a tabela final seja limpa
     final_base = final_base.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
 
+    # =====================================================================
+    # NOVO: RATEIO PROPORCIONAL DE VALORES SEM CENTRO DE CUSTO / AJUSTES
+    # =====================================================================
+    # Identifica linhas que não têm dono
+    mask_sem_cc = final_base['COLETOR'].astype(str).str.replace(' ', '').str.upper().isin(['SEMCENTRODECUSTO', 'AJUSTEDECONCILIACAO'])
+    valor_ratear = final_base.loc[mask_sem_cc, 'VALOR'].sum()
+    
+    if valor_ratear > 0.00:
+        # Remove as linhas sem dono da base principal
+        df_validos = final_base[~mask_sem_cc].copy().reset_index(drop=True)
+        
+        if not df_validos.empty:
+            if debug: print(f"[DEBUG] Rateando R$ {valor_ratear:.2f} (Sem CC / Ajuste) proporcionalmente entre os centros de custo válidos...")
+            soma_validos = df_validos['VALOR'].sum()
+            
+            # Calcula a proporção para cada linha e adiciona o valor
+            df_validos['VALOR_ADD'] = (df_validos['VALOR'] / soma_validos) * valor_ratear
+            df_validos['VALOR_ADD'] = df_validos['VALOR_ADD'].round(2)
+            
+            # Corrige a diferença de centavos gerada pelo arredondamento do Excel/Python
+            diff_centavos = round(valor_ratear - df_validos['VALOR_ADD'].sum(), 2)
+            if diff_centavos != 0:
+                idx_max = df_validos['VALOR'].idxmax() # Acha a linha com o maior valor
+                df_validos.loc[idx_max, 'VALOR_ADD'] += diff_centavos # Joga os centavos nela
+                
+            # Soma o valor rateado ao valor original da linha
+            df_validos['VALOR'] += df_validos['VALOR_ADD']
+            final_base = df_validos.drop(columns=['VALOR_ADD'])
+        else:
+            if debug: print("[DEBUG] ALERTA: Não há centros de custo válidos para receber o rateio.")
+
     # Monta Tabela Final
     final = pd.DataFrame()
     final['ITEM'] = [1] * len(final_base)
