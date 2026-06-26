@@ -20,7 +20,6 @@ def _norm_colname(s: str) -> str:
     return _strip_accents(str(s)).lower().strip()
 
 def _clean_str(x) -> str:
-    """Evita o bug do Excel de transformar diagramas numéricos em float (ex: 100000611074.0)"""
     if pd.isna(x): return ''
     if isinstance(x, float):
         if x.is_integer(): return str(int(x))
@@ -72,11 +71,9 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
     
     for sh in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sh, header=None, engine='openpyxl')
-        
         idx_ancora = -1
         max_knf = 0
         
-        # 1. Procura a coluna com a maior concentração de K, N, F (Âncora)
         for j in range(df.shape[1]):
             col_str = df.iloc[:, j].astype(str).str.strip().str.upper()
             count_knf = col_str.isin(['K', 'N', 'F']).sum()
@@ -84,20 +81,16 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
                 max_knf = count_knf
                 idx_ancora = j
                 
-        if idx_ancora == -1: 
-            continue
+        if idx_ancora == -1: continue
             
-        # 2. ISOLAMENTO: Recorta a tabela e descarta todo o lixo à esquerda
         df_regional = df.iloc[:, idx_ancora:].copy()
-        df_regional.columns = range(df_regional.shape[1]) # Reseta as colunas para 0, 1, 2...
+        df_regional.columns = range(df_regional.shape[1])
         
         col_coletor, col_subnum, col_valor = -1, -1, -1
         header_row_idx = -1
         
-        # 3. Procura os cabeçalhos (da esquerda para a direita) DENTRO da zona isolada
         for i, row in df_regional.head(20).iterrows():
             row_norm = [_norm_colname(str(x)) for x in row.values]
-            
             if 'coletor' in row_norm or 'subnumero' in row_norm:
                 for j in range(len(row_norm)):
                     val = row_norm[j]
@@ -105,7 +98,6 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
                     elif 'subnumero' in val and col_subnum == -1: col_subnum = j
                     elif 'valor' in val and 'servico' not in val and col_valor == -1: col_valor = j
                 
-                # Fallback para a palavra valor (caso tenha nome composto)
                 if col_valor == -1:
                     for j in range(len(row_norm)):
                         if 'valor' in row_norm[j] and col_valor == -1: col_valor = j
@@ -117,17 +109,15 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
         if header_row_idx != -1:
             tmp = df_regional.iloc[header_row_idx + 1:].copy()
             def safe_get(c): return tmp.iloc[:, c] if c != -1 and c < tmp.shape[1] else pd.Series(['']*len(tmp))
-            
             tmp_clean = pd.DataFrame({
                 'COLETOR_ORIG': safe_get(col_coletor),
                 'SUBNUM_ORIG': safe_get(col_subnum),
                 'VALOR': safe_get(col_valor)
             })
         else:
-            # Fallback (sem cabeçalho): Procura conteúdo da esquerda para direita na zona isolada
             col_coletor_tb = -1
             max_validos = 0
-            for j in range(1, df_regional.shape[1]): # Pula a coluna 0 (Âncora K/N/F)
+            for j in range(1, df_regional.shape[1]):
                 mask = df_regional.iloc[:, j].astype(str).apply(_is_valid_coletor)
                 qtd = mask.sum()
                 if qtd > max_validos and qtd >= 2:
@@ -143,8 +133,7 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
                     max_nums = nums
                     col_valor_tb = j
                     
-            if col_coletor_tb == -1 or col_valor_tb == -1:
-                continue
+            if col_coletor_tb == -1 or col_valor_tb == -1: continue
                 
             tmp_clean = pd.DataFrame({
                 'COLETOR_ORIG': df_regional.iloc[:, col_coletor_tb],
@@ -152,7 +141,6 @@ def ler_rr_bruto(caminho_rr: Union[str, Path]) -> pd.DataFrame:
                 'VALOR': df_regional.iloc[:, col_valor_tb]
             })
 
-        # 4. Limpeza e Prioridade de Centro de Custo
         tmp_clean['VALOR'] = _clean_valor_series(tmp_clean['VALOR'])
         tmp_clean = tmp_clean.dropna(subset=['VALOR'])
         
@@ -183,18 +171,15 @@ def _extrair_coletor_de_titular(texto: str) -> str:
     if pd.isna(texto) or str(texto).strip() == '': return "SEM CENTRO DE CUSTO"
     t = _strip_accents(str(texto)).upper()
     
-    # 1. Diagrama Exato
     m = re.search(r'(?<!\d)(\d{6,})(?!\d)', t)
     if m: return _norm_coletor(m.group(1))
     
-    # 2. Centro de Custo Unificado
     palavras = t.split()
     for p in palavras:
         p_clean = re.sub(r'[^A-Z0-9]', '', p)
         if 6 <= len(p_clean) <= 12 and any(c.isalpha() for c in p_clean) and any(c.isdigit() for c in p_clean):
             return p_clean
             
-    # 3. Cola-Pedaços (Ex: SU01 SP3080)
     for i in range(len(palavras) - 1):
         p1 = re.sub(r'[^A-Z0-9]', '', palavras[i])
         p2 = re.sub(r'[^A-Z0-9]', '', palavras[i+1])
@@ -209,7 +194,6 @@ def ler_correios_bruto(caminho_correios: Union[str, Path]) -> Tuple[pd.DataFrame
     idx_header = -1
     col_titular, col_valor = -1, -1
     
-    # 1. Encontrar o cabeçalho da tabela principal
     for i, row in df_raw.head(20).iterrows():
         row_norm = [_norm_colname(str(x)) for x in row.values]
         if any('titular do cartao' in c for c in row_norm) and any('valor do servico' in c for c in row_norm):
@@ -219,23 +203,17 @@ def ler_correios_bruto(caminho_correios: Union[str, Path]) -> Tuple[pd.DataFrame
                 if 'valor do servico' in c: col_valor = j
             break
             
-    # 2. Encontrar o "Valor Líquido" no final do arquivo
     valor_liquido = 0.0
     idx_fim_tabela = len(df_raw)
     
-    # Busca de baixo para cima para encontrar a seção de totais
     for i in range(len(df_raw) - 1, -1, -1):
         row_norm = [_norm_colname(str(x)) for x in df_raw.iloc[i].values]
-        
-        # Verifica se encontrou a linha de cabeçalho dos totais
         if any('valor liquido' in c for c in row_norm):
-            idx_fim_tabela = i  # A tabela de dados principal termina antes dessa linha
+            idx_fim_tabela = i
             for j, c in enumerate(row_norm):
                 if 'valor liquido' in c:
-                    # O valor real está na linha de baixo (i + 1), na mesma coluna (j)
                     if i + 1 < len(df_raw):
                         val_raw = df_raw.iloc[i + 1, j]
-                        # Reutilizamos a sua função de limpeza passando uma Series de 1 elemento
                         valor_liquido = _clean_valor_series(pd.Series([val_raw])).iloc[0]
                     break
             break
@@ -243,17 +221,19 @@ def ler_correios_bruto(caminho_correios: Union[str, Path]) -> Tuple[pd.DataFrame
     if idx_header == -1: 
         return pd.DataFrame(columns=['TIPOCOLETOR', 'COLETOR', 'VALOR']), valor_liquido
     
-    # 3. Processar a tabela principal (limitando até idx_fim_tabela para ignorar os resumos)
     df = df_raw.iloc[idx_header + 1 : idx_fim_tabela, [col_titular, col_valor]].copy()
     df.columns = ['TITULAR', 'VALOR']
+    
+    # IGNORA LINHAS DE ENCARGOS E DESCONTOS (Serão tratados matematicamente no final)
+    mask_ignorar = df['TITULAR'].astype(str).str.upper().str.contains('ENCARGO|DESCONTO|CREDITO')
+    df = df[~mask_ignorar].copy()
+    
     df['VALOR'] = _clean_valor_series(df['VALOR'])
     df = df.dropna(subset=['VALOR'])
     df['COLETOR'] = df['TITULAR'].apply(_extrair_coletor_de_titular)
     df['TIPOCOLETOR'] = df['COLETOR'].apply(_tipo_de_coletor)
     
-    df_final = df[['TIPOCOLETOR', 'COLETOR', 'VALOR']]
-    
-    return df_final, valor_liquido
+    return df[['TIPOCOLETOR', 'COLETOR', 'VALOR']], valor_liquido
 
 # ==========================================
 #     CONSTRUÇÃO E CONCILIAÇÃO FINAL
@@ -291,10 +271,12 @@ def gerar_rateio_pag(
     df_rr_raw = ler_rr_bruto(caminho_rr)
     df_corr_raw, valor_liquido_correios = ler_correios_bruto(caminho_correios)
 
+    # GARANTIA DE TIPO NUMÉRICO
+    df_rr_raw['VALOR'] = pd.to_numeric(df_rr_raw['VALOR'], errors='coerce').fillna(0.0)
+    df_corr_raw['VALOR'] = pd.to_numeric(df_corr_raw['VALOR'], errors='coerce').fillna(0.0)
+
     total_rr = float(df_rr_raw['VALOR'].sum()) if not df_rr_raw.empty else 0.0
     total_corr_soma = float(df_corr_raw['VALOR'].sum()) if not df_corr_raw.empty else 0.0
-    
-    # O total oficial dos correios é o Valor Líquido do rodapé (se encontrado)
     total_corr = valor_liquido_correios if valor_liquido_correios > 0 else total_corr_soma
 
     if debug:
@@ -303,125 +285,118 @@ def gerar_rateio_pag(
         print(f"[DEBUG] TOTAL CORREIOS (LÍQ)   = R$ {valor_liquido_correios:.2f}")
         print(f"[DEBUG] DIFERENÇA (LÍQ - RR)   = R$ {round(total_corr - total_rr, 2):.2f}")
 
-    if abs(total_corr - total_rr) <= tolerancia_igual:
-        if debug: print("[DEBUG] Valores batem perfeitamente. Usando apenas Recebidos.")
-        final_base = df_rr_raw.copy()
-    else:
-        if debug: print("[DEBUG] Valores divergem. Iniciando Conciliação Avançada...")
+    # 1. BASE INICIAL: Tudo que a regional aprovou
+    linhas_finais = df_rr_raw.to_dict('records') if not df_rr_raw.empty else []
+
+    if abs(total_corr - total_rr) > tolerancia_igual:
+        if debug: print("[DEBUG] Valores divergem. Buscando pacotes exatos faltantes...")
         
-        # 1. Agrupar os dados ANTES de comparar para evitar duplicação por quebra de linhas
-        df_rr_grp = df_rr_raw.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
-        df_corr_grp = df_corr_raw.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
-
-        coletores_rr = set(df_rr_grp['COLETOR'])
-        valores_rr_disponiveis = df_rr_grp['VALOR'].round(2).tolist()
+        rr_valores_exatos = df_rr_raw['VALOR'].round(2).tolist()
         
-        faltantes = []
-
-        def dar_baixa_valor_total(val):
-            for i, v in enumerate(valores_rr_disponiveis):
-                if abs(v - val) <= 0.02:
-                    valores_rr_disponiveis.pop(i)
-                    return True
-            return False
-
-        for _, row in df_corr_grp.iterrows():
+        # Saldo por Centro de Custo
+        saldo_rr_cc = {}
+        for _, row in df_rr_raw.iterrows():
+            c = row['COLETOR']
+            saldo_rr_cc[c] = saldo_rr_cc.get(c, 0.0) + row['VALOR']
+            
+        # A "Carteira" Global (Garante que nunca vamos adicionar pacotes a mais)
+        saldo_global_rr = total_rr
+        pacotes_faltantes = []
+        
+        for _, row in df_corr_raw.iterrows():
             c = row['COLETOR']
             v = round(row['VALOR'], 2)
+            tipo = row['TIPOCOLETOR']
             
-            if c in coletores_rr:
-                # Coletor existe no RR. Pegamos o valor que o RR aprovou.
-                val_no_rr = round(df_rr_grp[df_rr_grp['COLETOR'] == c]['VALOR'].sum(), 2)
-                
-                # Removemos esse valor da lista para não dar falso positivo em renomeações
-                dar_baixa_valor_total(val_no_rr) 
-                
-                # Se os Correios cobraram MAIS do que o RR aprovou, a diferença ficou de fora
-                if v > val_no_rr + 0.02:
-                    faltantes.append({
-                        'TIPOCOLETOR': row['TIPOCOLETOR'],
-                        'COLETOR': c,
-                        'VALOR': v - val_no_rr
-                    })
-            else:
-                # Coletor NÃO existe no RR.
-                if dar_baixa_valor_total(v):
-                    # O valor bate exatamente com outro coletor do RR. 
-                    # Assumimos que foi apenas renomeado/corrigido pela regional. Não adiciona.
-                    pass
-                else:
-                    # Realmente faltante (regional excluiu ou esqueceu).
-                    faltantes.append(row.to_dict())
-
-        if faltantes:
-            df_faltantes = pd.DataFrame(faltantes)
-            final_base = pd.concat([df_rr_grp, df_faltantes], ignore_index=True)
-            if debug: print(f"[DEBUG] Encontrados {len(faltantes)} centros de custo com divergência.")
-        else:
-            final_base = df_rr_grp.copy()
+            matched = False
             
-        # TRAVA DE SEGURANÇA: Impede que a conciliação gere um valor maior que a fatura
-        soma_final = final_base['VALOR'].sum()
-        if soma_final > total_corr + 0.50:
-            if debug: print("[DEBUG] ALERTA: A conciliação detalhada excedeu o total da fatura. Aplicando Ajuste Global.")
-            diferenca_global = total_corr - total_rr
-            if diferenca_global > 0.02:
-                linha_ajuste = pd.DataFrame([{
-                    'TIPOCOLETOR': '-',
-                    'COLETOR': 'AJUSTE DE CONCILIACAO',
-                    'VALOR': diferenca_global
-                }])
-                final_base = pd.concat([df_rr_grp, linha_ajuste], ignore_index=True)
+            # Fase 1: Tenta pagar usando o saldo do próprio Centro de Custo
+            if c in saldo_rr_cc and saldo_rr_cc[c] >= v - 0.02:
+                saldo_rr_cc[c] -= v
+                saldo_global_rr -= v
+                matched = True
+                # Remove da lista de valores exatos para não usar duas vezes
+                for i, rr_v in enumerate(rr_valores_exatos):
+                    if abs(rr_v - v) <= 0.02:
+                        rr_valores_exatos.pop(i)
+                        break
+            
+            # Fase 2: Tenta pagar achando o valor exato (caso o CC tenha mudado de nome)
+            if not matched:
+                for i, rr_v in enumerate(rr_valores_exatos):
+                    if abs(rr_v - v) <= 0.02:
+                        rr_valores_exatos.pop(i)
+                        saldo_global_rr -= v
+                        matched = True
+                        break
+                        
+            # Se não achou de jeito nenhum, vai para a fila de espera
+            if not matched:
+                pacotes_faltantes.append({
+                    'TIPOCOLETOR': tipo,
+                    'COLETOR': c,
+                    'VALOR': v
+                })
+                
+        # Fase 3: Absorção pela Carteira Global
+        # Se a regional agrupou valores E mudou o nome, o pacote cai aqui.
+        # Usamos o dinheiro que sobrou na carteira para pagar. Se a carteira zerar, aí sim é um pacote faltante!
+        pacotes_adicionados = 0
+        for pct in pacotes_faltantes:
+            v = pct['VALOR']
+            if saldo_global_rr >= v - 0.02:
+                # A carteira cobre! (Falso positivo, a regional já pagou por isso)
+                saldo_global_rr -= v
             else:
-                final_base = df_rr_grp.copy()
+                # A carteira não cobre! Realmente faltou na planilha da regional.
+                linhas_finais.append(pct)
+                pacotes_adicionados += 1
+                
+        if debug: print(f"[DEBUG] Adicionados {pacotes_adicionados} pacotes exatos dos Correios.")
 
-    # Agrupa tudo novamente para garantir que a tabela final seja limpa
-    final_base = final_base.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
+    # Transforma em DataFrame e agrupa para unificar linhas do mesmo CC
+    final_base = pd.DataFrame(linhas_finais)
+    if not final_base.empty:
+        final_base = final_base.groupby(['TIPOCOLETOR', 'COLETOR'], as_index=False)['VALOR'].sum()
 
-    # =====================================================================
-    # NOVO: RATEIO PROPORCIONAL DE VALORES SEM CENTRO DE CUSTO / AJUSTES
-    # =====================================================================
-    # Identifica linhas que não têm dono
-    mask_sem_cc = final_base['COLETOR'].astype(str).str.replace(' ', '').str.upper().isin(['SEMCENTRODECUSTO', 'AJUSTEDECONCILIACAO'])
-    valor_ratear = final_base.loc[mask_sem_cc, 'VALOR'].sum()
+    # 3. RATEIO DE ENCARGOS E DESCONTOS (Matemática)
+    soma_atual = final_base['VALOR'].sum() if not final_base.empty else 0.0
+    diferenca_rateio = round(total_corr - soma_atual, 2)
     
-    if valor_ratear > 0.00:
-        # Remove as linhas sem dono da base principal
-        df_validos = final_base[~mask_sem_cc].copy().reset_index(drop=True)
+    # Se sobrou diferença (Encargos) ou faltou (Descontos), rateia entre todos
+    if abs(diferenca_rateio) > 0.02 and not final_base.empty:
+        if debug: print(f"[DEBUG] Rateando R$ {diferenca_rateio:.2f} (Encargos/Descontos) proporcionalmente...")
         
-        if not df_validos.empty:
-            if debug: print(f"[DEBUG] Rateando R$ {valor_ratear:.2f} (Sem CC / Ajuste) proporcionalmente entre os centros de custo válidos...")
-            soma_validos = df_validos['VALOR'].sum()
+        soma_validos = final_base['VALOR'].sum()
+        if soma_validos > 0:
+            # Calcula a proporção
+            final_base['VALOR_ADD'] = (final_base['VALOR'] / soma_validos) * diferenca_rateio
+            final_base['VALOR_ADD'] = final_base['VALOR_ADD'].round(2)
             
-            # Calcula a proporção para cada linha e adiciona o valor
-            df_validos['VALOR_ADD'] = (df_validos['VALOR'] / soma_validos) * valor_ratear
-            df_validos['VALOR_ADD'] = df_validos['VALOR_ADD'].round(2)
-            
-            # Corrige a diferença de centavos gerada pelo arredondamento do Excel/Python
-            diff_centavos = round(valor_ratear - df_validos['VALOR_ADD'].sum(), 2)
+            # Ajuste de centavos (dízimas)
+            diff_centavos = round(diferenca_rateio - final_base['VALOR_ADD'].sum(), 2)
             if diff_centavos != 0:
-                idx_max = df_validos['VALOR'].idxmax() # Acha a linha com o maior valor
-                df_validos.loc[idx_max, 'VALOR_ADD'] += diff_centavos # Joga os centavos nela
+                idx_max = final_base['VALOR'].idxmax() 
+                final_base.loc[idx_max, 'VALOR_ADD'] += diff_centavos 
                 
-            # Soma o valor rateado ao valor original da linha
-            df_validos['VALOR'] += df_validos['VALOR_ADD']
-            final_base = df_validos.drop(columns=['VALOR_ADD'])
-        else:
-            if debug: print("[DEBUG] ALERTA: Não há centros de custo válidos para receber o rateio.")
+            # Aplica o rateio
+            final_base['VALOR'] += final_base['VALOR_ADD']
+            final_base = final_base.drop(columns=['VALOR_ADD'])
 
     # Monta Tabela Final
     final = pd.DataFrame()
-    final['ITEM'] = [1] * len(final_base)
-    final['TIPOCOLETOR'] = final_base['TIPOCOLETOR']
-    final['COLETOR'] = final_base['COLETOR']
-    final['OPERACAO'] = final_base['TIPOCOLETOR'].apply(lambda t: operacao_para_diagrama if t == 'N' else '')
-    final['SUBNUMERO'] = ''
-    final['VALOR'] = final_base['VALOR']
-    final['DESCRICAO'] = ''
+    if not final_base.empty:
+        final['ITEM'] = [1] * len(final_base)
+        final['TIPOCOLETOR'] = final_base['TIPOCOLETOR']
+        final['COLETOR'] = final_base['COLETOR']
+        final['OPERACAO'] = final_base['TIPOCOLETOR'].apply(lambda t: operacao_para_diagrama if t == 'N' else '')
+        final['SUBNUMERO'] = ''
+        final['VALOR'] = final_base['VALOR']
+        final['DESCRICAO'] = ''
 
-    # Ordenação (K -> N -> Faltantes no Final)
-    final['__ord'] = final['TIPOCOLETOR'].map({'K': 0, 'N': 1}).fillna(2)
-    final = final.sort_values(['__ord', 'COLETOR']).drop(columns='__ord').reset_index(drop=True)
+        # Ordenação (K -> N -> Faltantes no Final)
+        final['__ord'] = final['TIPOCOLETOR'].map({'K': 0, 'N': 1}).fillna(2)
+        final = final.sort_values(['__ord', 'COLETOR']).drop(columns='__ord').reset_index(drop=True)
 
     saida = Path(saida)
     with pd.ExcelWriter(saida, engine='openpyxl') as writer:
@@ -437,13 +412,11 @@ def gerar_rateio_pag(
 #     INICIALIZAÇÃO AUTOMÁTICA
 # ==========================================
 if __name__ == '__main__':
-    # >>> MUDE AQUI O CAMINHO DA SUA PASTA <<<
     pasta_trabalho = Path(r"C:/Users/pedro.henrsilva/OneDrive - MRV/Área de Trabalho/Rateio_Regionais/testar_edicao")
     
     caminho_rr = None
     caminho_correios = None
     
-    # Vasculha a pasta procurando os arquivos dinamicamente
     for ficheiro in pasta_trabalho.glob('*.xlsx'):
         nome_ficheiro = ficheiro.name.upper()
         if nome_ficheiro.startswith('~$') or nome_ficheiro == 'RATEIO PAG.XLSX': continue
@@ -452,14 +425,8 @@ if __name__ == '__main__':
 
     if not caminho_rr or not caminho_correios:
         print("ERRO: Faltam planilhas na pasta!")
-        if not caminho_rr: print("- Faltou a planilha com nome 'RATEIO RECEBIDO'.")
-        if not caminho_correios: print("- Faltou a planilha dos Correios (ex: 1234567.xlsx).")
     else:
         print(f"\n>> Iniciando processamento...")
-        print(f"Planilha Correios: {caminho_correios.name}")
-        print(f"Planilha Rateio: {caminho_rr.name}\n")
-        
         caminho_saida = pasta_trabalho / "RATEIO PAG.xlsx"
-        
         final = gerar_rateio_pag(caminho_correios=caminho_correios, caminho_rr=caminho_rr, saida=caminho_saida)
         print(f"\nTotal de linhas geradas no final: {len(final)}")
