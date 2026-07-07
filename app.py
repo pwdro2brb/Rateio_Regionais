@@ -2668,6 +2668,28 @@ class AppRoboMRV:
             self._habilitar_botoes()
 
     def iniciar_etapa_2(self):
+        # --- VALIDAÇÃO DA ETAPA 2 ---
+        pasta_trabalho = Path(r"C:\Users\pedro.henrsilva\OneDrive - MRV\Área de Trabalho\Rateio_Regionais\testar_edicao")
+        
+        if not pasta_trabalho.exists():
+            messagebox.showwarning("Aviso", "A pasta 'testar_edicao' não foi encontrada no caminho especificado!")
+            return
+            
+        arquivos = list(pasta_trabalho.glob('*.xlsx'))
+        tem_rr = any('RATEIO RECEBIDO' in f.name.upper() for f in arquivos if not f.name.startswith('~$'))
+        tem_correios = any(re.match(r'^\d{7}\.XLSX$', f.name.upper()) for f in arquivos if not f.name.startswith('~$'))
+        
+        if not tem_rr or not tem_correios:
+            messagebox.showwarning(
+                "Arquivos Ausentes", 
+                "Faltam arquivos na pasta 'testar_edicao'.\n\n"
+                "Certifique-se de ter:\n"
+                "1. A planilha original dos Correios (ex: 1234567.xlsx)\n"
+                "2. A planilha preenchida (com 'Rateio Recebido' no nome)"
+            )
+            return
+            
+        # Se passou na validação, inicia a thread
         threading.Thread(target=self._rodar_etapa_2, daemon=True).start()
 
     def _rodar_etapa_2(self):
@@ -2681,8 +2703,35 @@ class AppRoboMRV:
             self._habilitar_botoes()
 
     def iniciar_etapa_3(self):
+        # --- VALIDAÇÃO DA ETAPA 3 ---
+        pasta_exemplos = Path(r"C:\Users\pedro.henrsilva\OneDrive - MRV\Área de Trabalho\Rateio_Regionais\exemplos")
+        
+        if not pasta_exemplos.exists():
+            messagebox.showwarning("Aviso", "A pasta 'exemplos' não foi encontrada!")
+            return
+            
+        planilha_rateio = list(pasta_exemplos.glob("RATEIO PAG.xlsx"))
+        pdfs = list(pasta_exemplos.glob("*.pdf"))
+        arquivo_regras = Path(__file__).with_name("dados_puxados_preenchimento.xlsx")
+        
+        if not arquivo_regras.exists():
+            messagebox.showwarning("Aviso", "A base 'dados_puxados_preenchimento.xlsx' não foi encontrada na raiz do robô.")
+            return
+            
+        if not planilha_rateio:
+            messagebox.showwarning("Aviso", "O arquivo 'RATEIO PAG.xlsx' não está na pasta 'exemplos'.\nExecute a Etapa 2 primeiro!")
+            return
+            
+        if len(pdfs) == 0:
+            messagebox.showwarning("Aviso", "Nenhum boleto PDF foi encontrado na pasta 'exemplos'.")
+            return
+        elif len(pdfs) > 1:
+            messagebox.showwarning("Aviso", "Há mais de um PDF na pasta 'exemplos'.\nDeixe apenas UM boleto para o lançamento!")
+            return
+            
+        # Se passou na validação, inicia a thread
         threading.Thread(target=self._rodar_etapa_3, daemon=True).start()
-
+        
     def _rodar_etapa_3(self):
         self._desabilitar_botoes()
         print("\n>>> INICIANDO ETAPA 3: Lançamento no Portal MRV...")
