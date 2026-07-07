@@ -253,9 +253,9 @@ def lancar_nota_fiscal():
     # 4. NAVEGAÇÃO DO ROBÔ
     try:    
         print("Aguardando login...")
-        wait.until(EC.presence_of_element_located((By.ID, "i0116"))).send_keys("pedro.henrsilva@mrv.com.br") # Digite seu e-mail
+        wait.until(EC.presence_of_element_located((By.ID, "i0116"))).send_keys("") # Digite seu e-mail
         click_anti_stale(wait, By.ID, "idSIButton9")
-        wait.until(EC.presence_of_element_located((By.ID, "i0118"))).send_keys("Felipe22/") # Digite sua senha
+        wait.until(EC.presence_of_element_located((By.ID, "i0118"))).send_keys("") # Digite sua senha
         click_anti_stale(wait, By.ID, "idSIButton9")
         print("!!! APROVE O MFA NO CELULAR !!!")
         click_anti_stale(wait, By.ID, "idSIButton9") 
@@ -380,16 +380,42 @@ def lancar_nota_fiscal():
                 if (inp_valor.get_attribute("value") or "").strip(): break
             except StaleElementReferenceException: continue
 
-        qtd_cliques = click_ok_confirm(driver, wait_rapido, timeout=3, max_tentativas=3)
-        print(f"✅ {qtd_cliques} diálogo(s) confirmado(s) com sucesso.")
+        # =================================================================
+        # BLOCO OTIMIZADO: PREENCHIMENTO E CLIQUES RÁPIDOS
+        # =================================================================
+        
+        # 1. Reduz o tempo de espera do botão OK (se não tiver OK, ele passa rápido)
+        qtd_cliques = click_ok_confirm(driver, wait_rapido, timeout=1, max_tentativas=1)
+        if qtd_cliques > 0:
+            print(f"✅ {qtd_cliques} diálogo(s) confirmado(s) com sucesso.")
 
-        campo_desc = driver.find_element(By.CSS_SELECTOR, 'input[formcontrolname="frmDescNota"]')
-        campo_desc.clear()
-        campo_desc.send_keys(descr)
+        # 2. Preenchimento INSTANTÂNEO da descrição via JavaScript
+        campo_desc = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[formcontrolname="frmDescNota"]')))
+        driver.execute_script("""
+            arguments[0].value = arguments[1];
+            arguments[0].dispatchEvent(new Event('input', {bubbles: true}));
+            arguments[0].dispatchEvent(new Event('change', {bubbles: true}));
+        """, campo_desc, descr)
+        campo_desc.send_keys(Keys.TAB) # Força o site a validar o campo
+        time.sleep(0.2) # Pausa minúscula só para o botão habilitar
 
-        btn1 = click_primeiro_continuar(driver, wait_rapido)
-        esperar_transicao_apos_primeiro(wait_rapido, btn1)
-        click_segundo_continuar(driver, wait_rapido)
+        # 3. Clique Agressivo no 1º CONTINUAR (Ignora animações e clica direto)
+        driver.execute_script("""
+            let btns = Array.from(document.querySelectorAll("button"));
+            let btn = btns.find(b => b.textContent.includes("CONTINUAR") && !b.disabled && !b.classList.contains("mat-button-disabled"));
+            if(btn) btn.click();
+        """)
+
+        # 4. Espera a tela transicionar e dá um Clique Agressivo no 2º CONTINUAR
+        locator_link = (By.XPATH, "//a[.//span[normalize-space(.)='CONTINUAR']]")
+        wait.until(EC.presence_of_element_located(locator_link)) # Espera o link aparecer no HTML
+        
+        driver.execute_script("""
+            let links = Array.from(document.querySelectorAll("a"));
+            let link = links.find(a => a.textContent.includes("CONTINUAR") && !a.classList.contains("mat-button-disabled"));
+            if(link) link.click();
+        """)
+        # =================================================================
 
         btn_adicionar = wait_rapido.until(EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(.)='Adicionar']/ancestor::button[1]")))
         btn_adicionar.click()
@@ -397,7 +423,34 @@ def lancar_nota_fiscal():
         preencher_codigo_material_ultima_linha(driver, wait_rapido, material_cod, timeout=10)
         click_pesquisar(driver, wait_rapido)
 
-        selecionar_primeira_linha_checkbox(driver, wait, timeout=40, textos_para_verificar=["S2601", "5001382", "CNAE/NCM"], exigir_todos=False, clicar_mesmo_se_faltar=True)
+        # =================================================================
+        # BLOCO OTIMIZADO: SELEÇÃO DA PRIMEIRA LINHA (CHECKBOX)
+        # =================================================================
+        print("Aguardando tabela carregar para selecionar o checkbox...")
+        
+        # Cria um wait de 40s APENAS para esperar a API do site devolver os dados da tabela
+        wait_longo = WebDriverWait(driver, 40)
+        locator_checkbox = (By.XPATH, "(//td[contains(@class,'mat-column-select')]//mat-checkbox)[1]")
+        
+        # Assim que o elemento nascer no HTML, o código avança (sem esperar estabilidade ou animação)
+        wait_longo.until(EC.presence_of_element_located(locator_checkbox))
+        
+        # Clique Agressivo via JS direto no coração do checkbox do Angular Material
+        driver.execute_script("""
+            let matCheckbox = document.querySelector("td.mat-column-select mat-checkbox");
+            if (matCheckbox) {
+                // O Angular Material esconde o input, o clique real tem que ser no <label>
+                let label = matCheckbox.querySelector("label");
+                if (label) {
+                    label.click();
+                } else {
+                    matCheckbox.click();
+                }
+            }
+        """)
+        print("✅ Primeira linha selecionada instantaneamente!")
+        # =================================================================
+        
         click_incluir_produtos(driver, wait_rapido)
         preencher_quantidade_e_valor(driver, wait_rapido, quantidade="1", valor_boleto=valor_boleto)
         abrir_select_justificativa(driver, wait_rapido)
